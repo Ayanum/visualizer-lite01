@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Terminal Glitch Techno Visualizer (Lite)</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #000; overflow: hidden;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", sans-serif;
+  }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+  #ui {
+    position: fixed; top: 0; left: 0; width: 100%;
+    display: flex; flex-direction: column; align-items: center;
+    padding-top: 40vh; box-sizing: border-box; z-index: 10;
+    color: #fff; text-align: center; pointer-events: none;
+  }
+  #ui.hidden { display: none; }
+  #startBtn {
+    pointer-events: all;
+    background: #fff; color: #000; border: none;
+    padding: 14px 28px; font-size: 16px; font-weight: bold;
+    border-radius: 30px; cursor: pointer; letter-spacing: 0.05em;
+  }
+  #startBtn:active { transform: scale(0.96); }
+  #hint { margin-top: 14px; font-size: 12px; opacity: 0.6; }
+  #badge {
+    position: fixed; bottom: 16px; left: 16px; z-index: 10;
+    color: rgba(255,255,255,0.5); font-size: 11px; letter-spacing: 0.05em;
+  }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="c"></canvas></div>
+<div id="ui">
+  <button id="startBtn">🎤 マイクを有効にする</button>
+  <div id="hint">音楽を流しながらタップしてください</div>
+</div>
+<div id="badge">DATA GLITCH VISUALIZER — NEON (LITE)</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const ui = document.getElementById('ui');
+const startBtn = document.getElementById('startBtn');
+const badgeEl = document.getElementById('badge');
+const badgeBaseText = badgeEl.textContent;
+const DPR = Math.min(window.devicePixelRatio || 1, 1);
+
+const snapCanvas = document.createElement('canvas');
+const snapCtx = snapCanvas.getContext('2d');
+
+function pickRandom(arr){ return arr[(Math.random()*arr.length)|0]; }
+function randRange(min,max){ return min + Math.random()*(max-min); }
+function easeOutCubic(t){ return 1 - Math.pow(1 - t, 3); }
+
+let fontSize, lineHeight;
+function resize() {
+  canvas.width = window.innerWidth * DPR;
+  canvas.height = window.innerHeight * DPR;
+  snapCanvas.width = canvas.width;
+  snapCanvas.height = canvas.height;
+  fontSize = 21 * DPR;
+  lineHeight = fontSize * 1.35;
+  initAmbient();
+}
+window.addEventListener('resize', resize);
+
+// ================= Audio =================
+let analyser, dataArray;
+let simulated = false;
+
+async function initAudio() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const source = audioCtx.createMediaStreamSource(stream);
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    analyser.smoothingTimeConstant = 0.3;
+    source.connect(analyser);
+    dataArray = new Uint8Array(analyser.frequencyBinCount);
+  } catch (e) {
+    simulated = true;
+    dataArray = new Uint8Array(512);
+  }
+  ui.classList.add('hidden');
+  resize();
+  requestAnimationFrame(loop);
+}
+startBtn.addEventListener('click', initAudio);
+
+function getBands() {
+  if (simulated) {
+    const t = performance.now() / 1000;
+    const bpm = 145;
+    const phase = (t * (bpm / 60)) % 1;
+    const beat = Math.pow(Math.max(0, Math.cos(phase * Math.PI * 2)), 14);
+    return {
+      bass: 0.25 + beat * 0.8,
+      mid: 0.28 + 0.22 * Math.sin(t * 2.6),
+      treble: 0.22 + 0.25 * Math.abs(Math.sin(t * 7.1))
+    };
+  }
+  analyser.getByteFrequencyData(dataArray);
+  const n = dataArray.length;
+  const bassEnd = Math.floor(n * 0.08);
+  const midEnd = Math.floor(n * 0.35);
+  let bass = 0, mid = 0, treble = 0;
+  for (let i = 0; i < bassEnd; i++) bass += dataArray[i];
+  for (let i = bassEnd; i < midEnd; i++) mid += dataArray[i];
+  for (let i = midEnd; i < n; i++) treble += dataArray[i];
+  bass /= (bassEnd * 255);
+  mid /= ((midEnd - bassEnd) * 255);
+  treble /= ((n - midEnd) * 255);
+  return { bass, mid, treble };
+}
+
+// ================= Neon data palette =================
+const GLITCH_COLORS = ['#FF00FF', '#00FFFF', '#39FF14', '#FFE600', '#FFFFFF'];
+const GLYPHS = '01' + '0123456789ABCDEF' + '|#/\\-_.:*.+ﾟ.☆.｡.:. *:ﾟ ｡';
+
+// ================= Barcode / test-pattern line layer =================
+function drawBarcode(intensity) {
+  if (intensity < 0.15) return;
+  const w = canvas.width, h = canvas.height;
+  const count = Math.floor(2 + intensity * 8); // lighter accent for mobile
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * w;
+    const thickRoll = Math.random();
+    const lw = (thickRoll < 0.7 ? randRange(0.4, 3) : randRange(3, 14)) * DPR;
+    ctx.fillStyle = pickRandom(GLITCH_COLORS);
+    ctx.fillRect(x, 0, lw, h);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ================= Idle ambient glyph layer (keeps the screen alive at rest) =================
+const AMBIENT_COUNT = 8;
+let ambientGlyphs = [];
+function makeAmbientGlyph() {
+  return {
+    x: Math.random() * canvas.width, y: Math.random() * canvas.height,
+    char: GLYPHS[(Math.random() * GLYPHS.length) | 0],
+    size: randRange(0.6, 1.6) * (fontSize || 21 * DPR),
+    color: pickRandom(GLITCH_COLORS),
+    phase: randRange(0, Math.PI * 2),
+    speed: randRange(20, 220) * DPR,
+    dir: Math.random() < 0.85 ? 1 : -1, // mostly upward, occasional drifter goes the other way
+    nextSwap: performance.now() + randRange(500, 1100)
+  };
+}
+function initAmbient() {
+  ambientGlyphs = [];
+  for (let i = 0; i < AMBIENT_COUNT; i++) ambientGlyphs.push(makeAmbientGlyph());
+}
+function drawAmbient(now, energy, dt, mid) {
+  ctx.textBaseline = 'top';
+  const h = canvas.height;
+  for (const g of ambientGlyphs) {
+    if (now > g.nextSwap) Object.assign(g, makeAmbientGlyph());
+    g.y -= g.dir * (g.speed * (0.4 + mid * 1.2)) * dt;
+    if (g.y < -g.size) g.y = h + g.size;
+    if (g.y > h + g.size) g.y = -g.size;
+    const twinkle = 0.5 + 0.5 * Math.sin(now / 500 + g.phase);
+    ctx.globalAlpha = (0.4 + energy * 0.4) * (0.6 + 0.4 * twinkle);
+    ctx.fillStyle = g.color;
+    ctx.font = `bold ${g.size}px "Courier New", monospace`;
+    ctx.fillText(g.char, g.x, g.y);
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ================= Corruption overlay (garbled text + color bars) =================
+let lastCorruptionUpdate = 0;
+let kickFlashUntil = 0;
+let kickColorUntil = 0;
+let kickColor = '#FF00FF';
+let corruptionParticles = [];
+
+function spawnCorruption(now, intensity) {
+  if (intensity < 0.1) return;
+  if (now - lastCorruptionUpdate < 150) return; // even slower pace, fewer spawns per second
+  lastCorruptionUpdate = now;
+  const w = canvas.width, h = canvas.height;
+
+  const barCount = Math.floor(1 + intensity * 2);
+  for (let i = 0; i < barCount; i++) {
+    const bh = randRange(fontSize * 0.4, fontSize * 2);
+    const by = randRange(0, h - bh);
+    const bw = randRange(w * 0.12, w * 0.85);
+    const bx = randRange(0, w - bw);
+    const dir = Math.random() < 0.5 ? 1 : -1;
+    corruptionParticles.push({
+      type: 'bar', x: bx, y: by, w: bw, h: bh,
+      color: pickRandom(GLITCH_COLORS),
+      vy: dir * randRange(25, 100) * DPR,
+      born: now, life: randRange(400, 750)
+    });
+  }
+
+  const rows = Math.floor(h / lineHeight);
+  const rowChance = 0.04 + intensity * 0.1;
+  for (let r = 0; r < rows; r++) {
+    if (Math.random() > rowChance) continue;
+    const y = r * lineHeight;
+    let x = 0;
+    while (x < w) {
+      const runLen = 2 + Math.floor(Math.random() * 8);
+      let str = '';
+      for (let k = 0; k < runLen; k++) str += GLYPHS[(Math.random() * GLYPHS.length) | 0];
+      const sizeFactor = randRange(0.5, 1.8);
+      const runSize = fontSize * sizeFactor;
+      const dir = Math.random() < 0.5 ? 1 : -1;
+      corruptionParticles.push({
+        type: 'text', x, y, str, size: runSize,
+        color: pickRandom(GLITCH_COLORS),
+        vy: dir * randRange(20, 80) * DPR,
+        born: now, life: randRange(400, 750)
+      });
+      x += str.length * runSize * 0.62 + randRange(fontSize * 1.5, fontSize * 7);
+    }
+  }
+  if (corruptionParticles.length > 90) corruptionParticles.splice(0, corruptionParticles.length - 90);
+}
+
+function renderCorruption(now, dt) {
+  const h = canvas.height;
+  ctx.textBaseline = 'top';
+  for (let i = corruptionParticles.length - 1; i >= 0; i--) {
+    const p = corruptionParticles[i];
+    const age = now - p.born;
+    if (age > p.life) { corruptionParticles.splice(i, 1); continue; }
+    p.y += p.vy * dt;
+    if (p.y < -p.size * 2 - 40 || p.y > h + 40) { corruptionParticles.splice(i, 1); continue; }
+
+    const fadeT = age / p.life;
+    ctx.globalAlpha = fadeT < 0.75 ? 1 : Math.max(0, 1 - (fadeT - 0.75) / 0.25);
+    ctx.fillStyle = p.color;
+    if (p.type === 'bar') {
+      ctx.fillRect(p.x, p.y, p.w, p.h);
+    } else {
+      ctx.font = `bold ${p.size}px "Courier New", monospace`;
+      ctx.fillText(p.str, p.x, p.y);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+
+// ================= Slice tear (datamosh) =================
+let tearUntil = 0;
+let tearStrength = 1;
+let pendingTearAt = 0;
+let driftActive = false, driftSpeed = 0, driftDir = 1, driftUntil = 0;
+function applyTear() {
+  const w = canvas.width, h = canvas.height;
+  snapCtx.clearRect(0, 0, w, h);
+  snapCtx.drawImage(canvas, 0, 0);
+  const stripH = randRange(16, 30) * DPR; // thicker strips = fewer drawImage calls
+  for (let y = 0; y < h; y += stripH) {
+    const shift = (Math.random() - 0.5) * 80 * DPR * tearStrength;
+    ctx.drawImage(snapCanvas, 0, y, w, stripH, shift, y, w, stripH);
+  }
+}
+
+// ================= Post-tear scroll drift (decelerating slide) =================
+function applyDrift(now, dt) {
+  if (!driftActive) return;
+  if (now > driftUntil || driftSpeed < 4) { driftActive = false; return; }
+  const w = canvas.width, h = canvas.height;
+  const shift = driftDir * driftSpeed * dt;
+  snapCtx.clearRect(0, 0, w, h);
+  snapCtx.drawImage(canvas, 0, 0);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(snapCanvas, 0, shift);
+  driftSpeed *= Math.pow(0.015, dt); // friction — decelerates to a stop
+}
+
+// ================= Scanline pattern (built once) =================
+let scanPattern;
+function buildScanPattern() {
+  const tile = document.createElement('canvas');
+  tile.width = 2; tile.height = 4;
+  const tctx = tile.getContext('2d');
+  tctx.fillStyle = 'rgba(0,0,0,0)'; tctx.fillRect(0, 0, 2, 4);
+  tctx.fillStyle = 'rgba(0,0,0,0.28)'; tctx.fillRect(0, 0, 2, 1);
+  scanPattern = ctx.createPattern(tile, 'repeat');
+}
+
+// ================= Main loop =================
+let bassHistory = [];
+let lastBeat = 0;
+let beatCount = 0;
+let energyEnvelope = 0.3; // slow-moving loudness envelope -> drives overall 緩急 (dynamic contrast)
+let prevLoudness = 0;
+let prevGlitchNow = 0;
+let lastMicroGlitch = 0;
+let lastStrobeTrig = 0;
+let pendingEchoes = []; // delayed echo repeats of a kick reaction, like an audio delay effect
+let beatIntervals = [];
+let bpmEstimate = null;
+let corruptionScrollDir = 1;
+let corruptionScrollSpeed = 0;
+let glitchAnim = null;
+function getGlitchAmount(now) {
+  const base = 0.02; // near-silent between kicks
+  if (!glitchAnim) return base;
+  const t = now - glitchAnim.start;
+  if (t < glitchAnim.attack) return base + (glitchAnim.peak - base) * easeOutCubic(t / glitchAnim.attack);
+  const t2 = t - glitchAnim.attack;
+  if (t2 < glitchAnim.release) {
+    const p = Math.min(1, t2 / glitchAnim.release);
+    return glitchAnim.peak + (base - glitchAnim.peak) * (1 - Math.pow(1 - p, 2));
+  }
+  glitchAnim = null;
+  return base;
+}
+
+let lastFrameTime = performance.now();
+function loop() {
+  requestAnimationFrame(loop);
+  const now = performance.now();
+  const dt = Math.min(0.05, (now - lastFrameTime) / 1000);
+  lastFrameTime = now;
+  const { bass, mid, treble } = getBands();
+
+  bassHistory.push(bass);
+  if (bassHistory.length > 24) bassHistory.shift();
+  const avgBass = bassHistory.reduce((a, b) => a + b, 0) / bassHistory.length;
+
+  // track the music's overall loudness slowly -> quiet passages go sparse,
+  // loud/energetic passages get pushed harder. This is the source of 緩急.
+  const loudness = (bass + mid + treble) / 3;
+  energyEnvelope += (loudness - energyEnvelope) * 0.015;
+  const intensityMul = 0.25 + Math.min(1, energyEnvelope * 1.8) * 1.5; // ~0.25x quiet -> ~1.75x loud
+
+  // spectral flux: any sudden change in the sound (snare, hi-hat, vocal onset,
+  // not just the kick) — makes the visual react to more than the beat grid.
+  const flux = Math.max(0, loudness - prevLoudness);
+  prevLoudness = loudness;
+
+  if (bass > avgBass * 1.12 && bass > 0.15 + energyEnvelope * 0.25 && now - lastBeat > 110) {
+    const prevBeatTime = lastBeat;
+    lastBeat = now;
+    beatCount++;
+
+    // estimate BPM from the interval between consecutive detected kicks
+    if (prevBeatTime > 0) {
+      const interval = now - prevBeatTime;
+      if (interval > 260 && interval < 1100) { // plausible techno range (~55-230bpm)
+        beatIntervals.push(interval);
+        if (beatIntervals.length > 10) beatIntervals.shift();
+        if (beatIntervals.length >= 3) {
+          const sorted = [...beatIntervals].sort((a, b) => a - b);
+          const medianInterval = sorted[Math.floor(sorted.length / 2)];
+          bpmEstimate = Math.round(60000 / medianInterval);
+          badgeEl.textContent = `${badgeBaseText} · ${bpmEstimate} BPM`;
+        }
+      }
+    }
+    // the garbled corruption text fires on every kick
+    glitchAnim = { start: now, attack: 25, release: randRange(500, 700), peak: Math.min(0.85, (0.35 + bass * 0.45) * intensityMul * randRange(0.95, 1.12)) };
+    pendingEchoes.push({ at: now + randRange(180, 240), peak: glitchAnim.peak * 0.55 });
+    pendingEchoes.push({ at: now + randRange(420, 520), peak: glitchAnim.peak * 0.35 });
+    pendingEchoes.push({ at: now + randRange(700, 850), peak: glitchAnim.peak * 0.2 });
+    pendingEchoes.push({ at: now + randRange(950, 1150), peak: glitchAnim.peak * 0.1 });
+
+    // only the genuinely strongest hits get the datamosh / kick-flash / color burst
+    const isStrongHit = bass > 0.4 && bass > avgBass * 1.2;
+    if (isStrongHit) {
+      pendingTearAt = now + 30; // slightly softened impact
+      tearStrength = Math.min(1.1, (0.6 + bass * 0.5) * intensityMul);
+      kickFlashUntil = now + 42;
+      kickColor = pickRandom(GLITCH_COLORS.filter(c => c !== '#FFFFFF'));
+      kickColorUntil = now + 150;
+    }
+  }
+
+  // (white strobe removed per request — no trigger here anymore)
+
+  // micro-glitches from non-kick transients (snare/hat/vocal texture) so the
+  // corruption layer isn't purely locked to the kick grid
+  if (flux > 0.035 && now - lastMicroGlitch > 90) {
+    lastMicroGlitch = now;
+    const microPeak = (0.25 + flux * 3) * intensityMul;
+    if (!glitchAnim || microPeak > glitchAnim.peak * 0.6) {
+      glitchAnim = { start: now, attack: 12, release: randRange(180, 320), peak: microPeak };
+    }
+  }
+  for (let i = pendingEchoes.length - 1; i >= 0; i--) {
+    const e = pendingEchoes[i];
+    if (now >= e.at) {
+      if (!glitchAnim || e.peak > glitchAnim.peak * 0.12) {
+        glitchAnim = { start: now, attack: 15, release: randRange(320, 480), peak: e.peak };
+      }
+      pendingEchoes.splice(i, 1);
+    }
+  }
+  if (pendingTearAt && now >= pendingTearAt) {
+    tearUntil = now + 125;
+    pendingTearAt = 0;
+    // after the tear, let the frame keep sliding briefly and decelerate to a stop
+    driftActive = true;
+    driftSpeed = randRange(160, 340) * DPR * intensityMul;
+    driftDir = Math.random() < 0.5 ? 1 : -1;
+    driftUntil = tearUntil + randRange(220, 420);
+  }
+
+  const w = canvas.width, h = canvas.height;
+  const glitchNow = getGlitchAmount(now);
+  if (now < kickFlashUntil) {
+    ctx.fillStyle = 'rgba(0,0,0,0.45)';
+  } else if (glitchNow > 0.08 && prevGlitchNow <= 0.08) {
+    ctx.fillStyle = '#000000'; // still pop hard at the onset of a new burst
+  } else {
+    // smooth, continuous fade-out curve instead of a hard speed switch —
+    // the stronger the lingering glitch, the slower it fades, tapering
+    // gently back to the normal idle trail as it dies down.
+    const fadeAlpha = 0.32 - Math.min(0.28, glitchNow * 3.5);
+    ctx.fillStyle = `rgba(0,0,0,${fadeAlpha.toFixed(3)})`;
+  }
+  ctx.fillRect(0, 0, w, h);
+  prevGlitchNow = glitchNow;
+
+  drawAmbient(now, energyEnvelope, dt, mid);
+
+  drawBarcode((treble * 0.65 + mid * 0.2 + glitchNow * 0.25) * intensityMul);
+  spawnCorruption(now, Math.min(1.0, glitchNow + (now < kickFlashUntil ? 0.38 : 0)));
+  renderCorruption(now, dt);
+
+  if (now < tearUntil) applyTear();
+  applyDrift(now, dt);
+
+  // Kick color burst: keep the punch, but make the kick visibly chromatic.
+  if (now < kickColorUntil) {
+    const p = Math.max(0, 1 - (now - (kickColorUntil - 150)) / 150);
+    const colorPulse = 0.05 + p * 0.13;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+
+    // Broad color wash.
+    ctx.fillStyle = kickColor;
+    ctx.globalAlpha = colorPulse;
+    ctx.fillRect(0, 0, w, h);
+
+    // Concentrated horizontal chroma bands for a sharper techno hit.
+    const bandCount = 2 + Math.floor(p * 3);
+    for (let i = 0; i < bandCount; i++) {
+      const bh = randRange(3, 18) * DPR;
+      const by = Math.random() * h;
+      const bx = Math.random() * w * 0.35 - w * 0.15;
+      const bw = randRange(w * 0.35, w * 1.05);
+      ctx.globalAlpha = 0.10 + p * 0.22;
+      ctx.fillStyle = pickRandom(GLITCH_COLORS.filter(c => c !== '#FFFFFF'));
+      ctx.fillRect(bx, by, bw, bh);
+    }
+
+    // Neon edge tint — flat fill instead of a per-frame radial gradient (cheaper on mobile GPUs).
+    ctx.globalAlpha = 0.18 + p * 0.22;
+    ctx.fillStyle = kickColor;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.restore();
+  }
+
+  ctx.fillStyle = scanPattern;
+  ctx.fillRect(0, 0, w, h);
+}
+
+resize();
+buildScanPattern();
+</script>
+</body>
+</html>
