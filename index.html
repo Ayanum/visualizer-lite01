@@ -130,7 +130,7 @@ function drawBarcode(intensity) {
   for (let i = 0; i < count; i++) {
     const x = Math.random() * w;
     const thickRoll = Math.random();
-    const lw = (thickRoll < 0.7 ? randRange(0.4, 3) : randRange(3, 14)) * DPR;
+    const lw = (thickRoll < 0.7 ? randRange(0.4, 3) : randRange(3, 34)) * DPR;
     ctx.fillStyle = pickRandom(GLITCH_COLORS);
     ctx.fillRect(x, 0, lw, h);
   }
