@@ -190,7 +190,7 @@ function spawnCorruption(now, intensity) {
   for (let i = 0; i < barCount; i++) {
     const bh = randRange(fontSize * 0.4, fontSize * 2);
     const by = randRange(0, h - bh);
-    const bw = randRange(w * 0.12, w * 0.85);
+    const bw = randRange(w * 0.12, w * 0.35);
     const bx = randRange(0, w - bw);
     const dir = Math.random() < 0.5 ? 1 : -1;
     corruptionParticles.push({
